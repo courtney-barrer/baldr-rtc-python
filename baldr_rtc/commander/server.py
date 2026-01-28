@@ -8,6 +8,7 @@ from baldr_rtc.commander.protocol import parse_message_to_command_and_args
 from baldr_rtc.commander.module import Module
 
 
+
 class CommanderServer(threading.Thread):
     def __init__(self, endpoint: str, module: Module, stop_event: threading.Event):
         super().__init__(daemon=True)
@@ -25,6 +26,8 @@ class CommanderServer(threading.Thread):
                 continue
 
             msg = sock.recv_string().strip()
+
+            print(f"received: {msg}")
 
             if msg == "exit":
                 sock.send_string("Exiting!")

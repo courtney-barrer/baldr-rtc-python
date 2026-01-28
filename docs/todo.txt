@@ -1,0 +1,6 @@
+
+28-01-2025
+[x] make it a github repository (https://github.com/courtney-barrer/baldr-rtc-python)
+[x] implement telemetry write state (on/off). Default off (core/state.py, server.py)
+[ ] implement shared memory and semaphores for camera subframe read and DM SHM write (based on beam #). Look at my dcs/simulation python examples of using the shared memory 
+

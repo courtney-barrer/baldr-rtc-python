@@ -16,6 +16,8 @@ def build_commander_module(
 ) -> Module:
     m = Module()
 
+    ##################
+    # CONFIG
     def read_bdr(args):
         path = str(args[0]) if args else ""
         cfg = readBDRConfig(path)
@@ -25,6 +27,18 @@ def build_commander_module(
         configured = 1 if (len(cfg.matrices.I2M_LO) > 0 or len(cfg.matrices.I2M_HO) > 0) else 0
         return {"ok": True, "config_file": path, "configured": configured, "frequency": cfg.fps}
 
+    ##################
+    # TELEMETRY
+    def telem_on(args):
+        command_queue.put(make_cmd("SET_TELEM", enabled=True))
+        return {"ok": True, "take_telemetry": True}
+
+    def telem_off(args):
+        command_queue.put(make_cmd("SET_TELEM", enabled=False))
+        return {"ok": True, "take_telemetry": False}
+
+    ###################
+    # RTC STATE
     def pause_rtc(args):
         command_queue.put(make_cmd("PAUSE"))
         return {"ok": True}
@@ -37,6 +51,8 @@ def build_commander_module(
         command_queue.put(make_cmd("STOP"))
         return {"ok": True, "servo_mode": int(MainState.SERVO_STOP)}
 
+    ###################
+    # CONTROLLER STATE
     def close_all(args):
         command_queue.put(make_cmd("SET_LOHO", lo=int(ServoState.SERVO_CLOSE), ho=int(ServoState.SERVO_CLOSE)))
         return {"ok": True}
@@ -61,6 +77,8 @@ def build_commander_module(
         command_queue.put(make_cmd("SET_HO", value=int(ServoState.SERVO_OPEN)))
         return {"ok": True}
 
+    ##################
+    # STATUS
     def status(args):
         cfg = globals_.rtc_config
         lo_ready = len(cfg.matrices.I2M_LO) > 0
@@ -85,17 +103,28 @@ def build_commander_module(
             "TT_offsets": 0,
         }
 
+
+    ##################
+    # CONFIG
     m.def_command("readBDRConfig", read_bdr, description="Load/parse config.", arguments=[ArgumentSpec("config_file", "string")], return_type="object")
+    ##################
+    # TELEMETRY
+    m.def_command("telem_on", telem_on, description="Enable telemetry writing.", return_type="object")
+    m.def_command("telem_off", telem_off, description="Disable telemetry writing.", return_type="object")
+    ###################
+    # RTC STATE
     m.def_command("pauseRTC", pause_rtc, description="Pause RTC loop.", return_type="object")
     m.def_command("resumeRTC", resume_rtc, description="Resume RTC loop.", return_type="object")
     m.def_command("stop_baldr", stop_baldr, description="Stop Baldr RTC loop.", return_type="object")
-
+    ###################
+    # CONTROLLER STATE
     m.def_command("close_all", close_all, description="Close LO+HO loops.", return_type="object")
     m.def_command("open_all", open_all, description="Open LO+HO loops.", return_type="object")
     m.def_command("close_baldr_LO", close_lo, description="Close LO loop.", return_type="object")
     m.def_command("open_baldr_LO", open_lo, description="Open LO loop.", return_type="object")
     m.def_command("close_baldr_HO", close_ho, description="Close HO loop.", return_type="object")
     m.def_command("open_baldr_HO", open_ho, description="Open HO loop.", return_type="object")
-
+    ##################
+    # STATUS
     m.def_command("status", status, description="Get Baldr status snapshot.", return_type="object")
     return m

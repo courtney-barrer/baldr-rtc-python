@@ -33,7 +33,7 @@ def readBDRConfig(config_path: str) -> BDRConfig:
     cfg.state = StateConfig(
         controller_type=str(_get(data, "state", "controller_type", default="unknown")),
         auto_close=bool(_get(data, "state", "auto_close", default=False)),
-        take_telemetry=bool(_get(data, "state", "take_telemetry", default=True)),
+        take_telemetry=bool(_get(data, "state", "take_telemetry", default=False)),
     )
     cfg.inj_signal = InjSignal(enabled=bool(_get(data, "inj_signal", "enabled", default=False)))
     cfg.limits = Limits(

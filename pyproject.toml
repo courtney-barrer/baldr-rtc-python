@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baldr-rtc-python"
+version = "0.1.0"
+description = "Python implementation of the Baldr real-time controller with commander-compatible ZMQ interface."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyzmq>=25",
+  "numpy>=1.23",
+  "toml; python_version < '3.11'",
+]
+
+authors = [
+  { name = "Benjamin Courtney-Barrer" }
+]
+
+[project.urls]
+Repository = "https://github.com/<your-username>/baldr-rtc-python"
+Issues = "https://github.com/<your-username>/baldr-rtc-python/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["baldr_rtc*"]
+
+

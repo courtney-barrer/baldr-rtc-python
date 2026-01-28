@@ -15,7 +15,7 @@ def main() -> int:
     ap.add_argument("--socket", default=None, help="Override commander REP endpoint, e.g. tcp://127.0.0.1:3001")
     ap.add_argument("--config", required=True, help="Path to config file (TOML).")
     ap.add_argument("--telem-dir", default=None, help="Telemetry output directory.")
-    ap.add_argument("--telem-capacity", type=int, default=200000, help="Telemetry ring capacity (samples).")
+    ap.add_argument("--telem-capacity", type=int, default=2000, help="Telemetry ring capacity (samples).")
     ap.add_argument("--flush-hz", type=float, default=1.0, help="Telemetry flush rate (Hz).")
     ap.add_argument("--chunk-seconds", type=float, default=2.0, help="Telemetry chunk duration (seconds).")
     args = ap.parse_args()

@@ -87,6 +87,8 @@ class RTCThread(threading.Thread):
         elif t == "SET_LOHO":
             self.g.servo_mode_LO = ServoState(int(cmd["lo"]))
             self.g.servo_mode_HO = ServoState(int(cmd["ho"]))
+        elif t == "SET_TELEM":
+            self.g.rtc_config.state.take_telemetry = bool(cmd.get("enabled", False))
         elif t == "LOAD_CONFIG":
             new_cfg = cmd.get("rtc_config")
             if new_cfg is not None:

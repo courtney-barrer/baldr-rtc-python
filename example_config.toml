@@ -4,7 +4,7 @@ fps = "1000"
 [state]
 controller_type = "PID"
 auto_close = false
-take_telemetry = true
+take_telemetry = false
 
 [inj_signal]
 enabled = false

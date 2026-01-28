@@ -37,7 +37,7 @@ class InjSignal:
 class StateConfig:
     controller_type: str = "unknown"
     auto_close: bool = False
-    take_telemetry: bool = True
+    take_telemetry: bool = False
 
 
 @dataclass

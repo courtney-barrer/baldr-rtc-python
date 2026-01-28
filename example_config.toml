@@ -1,0 +1,15 @@
+[cam]
+fps = "1000"
+
+[state]
+controller_type = "PID"
+auto_close = false
+take_telemetry = true
+
+[inj_signal]
+enabled = false
+
+[limits]
+open_on_flux_limit = 0.1
+close_on_strehl_limit = 0.5
+open_on_strehl_limit = 0.3

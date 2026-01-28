@@ -1,0 +1,82 @@
+
+
+# =========================
+# Specifics
+/initial_tests
+make_files.sh
+
+
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# =========================
+# Packaging / build
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# =========================
+# Editors / IDEs
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*~
+
+# =========================
+# OS-specific
+# =========================
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# =========================
+# Logs
+# =========================
+*.log
+
+# =========================
+# Telemetry / runtime output
+# =========================
+telem/
+telemetry/
+*.npz
+*.npy
+*.fits
+*.h5
+
+# =========================
+# ZMQ / IPC leftovers
+# =========================
+*.sock
+*.ipc
+
+# =========================
+# Temporary / scratch
+# =========================
+tmp/
+scratch/
+*.tmp
+
+# =========================
+# Test artifacts
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/

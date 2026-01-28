@@ -1,0 +1,250 @@
+Baldr RTC (Python) — Architecture & Design Summary
+
+Purpose
+
+This repository implements a Python re-implementation of the Baldr real-time controller (RTC), preserving the existing commander interface and operational semantics of the C++ system, while making the internal architecture more modular, testable, and easier to evolve.
+
+The immediate goal is backwards compatibility (especially commander commands and status output).
+The longer-term goal is maintainability, extensibility, and multi-beam operation.
+
+Each Baldr instance corresponds to one telescope beam and runs as one OS process.
+
+⸻
+
+Core Design Philosophy
+
+1. Separate responsibilities strictly
+
+The system is split into three planes that must never bleed into each other:
+	1.	Control plane
+Commander interface (ZMQ), parsing commands, replying to clients
+→ must remain responsive and backward-compatible
+	2.	Data plane
+RTC loop running at camera cadence
+→ must be minimal, deterministic, and free of blocking I/O
+	3.	I/O plane
+Telemetry buffering and disk writes
+→ must never affect RTC timing
+
+This separation is enforced structurally by the directory layout and thread ownership rules.
+
+⸻
+
+2. Preserve the public API, modernize internals
+
+The following are treated as stable API surfaces:
+	•	Commander command names
+	•	Commander command semantics
+	•	status JSON keys and meanings
+	•	Open/close/pause/stop behavior
+
+Everything behind those surfaces is free to change.
+
+This allows:
+	•	seamless replacement of the C++ RTC
+	•	existing operational tooling to continue working
+	•	incremental migration of control logic
+
+⸻
+
+3. One process per beam
+
+Each Baldr instance runs as an independent process:
+	•	independent ZMQ endpoint
+	•	independent RTC thread
+	•	independent telemetry buffers
+	•	no shared globals across beams
+
+This provides natural isolation and avoids cross-beam failure modes.
+
+⸻
+
+High-Level Architecture
+CLI
+ │
+ ▼
+Commander (ZMQ REP)  ←─── external clients
+ │
+ │  (commands)
+ ▼
+Command Queue
+ │
+ ▼
+RTC Loop (time-critical)
+ │
+ │  (per-frame telemetry)
+ ▼
+Telemetry Ring Buffer
+ │
+ ▼
+Telemetry Worker (async I/O)
+ │
+ ▼
+Disk
+
+
+
+Only the RTC loop mutates fast state.
+Commander and telemetry observe or request changes indirectly.
+
+⸻
+
+Module Responsibilities
+
+scripts/
+
+User-facing entrypoints only.
+	•	baldr_server.py
+Parses CLI args, maps --beam → socket, calls server main.
+	•	commander_client.py
+Sends one command string to a server and prints reply.
+
+These files should remain thin and stable.
+
+⸻
+
+baldr_rtc/server.py — System Orchestrator
+
+Equivalent to baldr.cpp.
+
+Responsibilities:
+	•	Load config (readBDRConfig)
+	•	Create shared runtime state
+	•	Create queues and ring buffers
+	•	Start threads:
+	•	RTC loop
+	•	telemetry worker
+	•	commander server
+	•	Handle orderly shutdown
+
+No control math lives here.
+
+⸻
+
+baldr_rtc/core/
+
+Shared definitions and runtime state.
+	•	state.py
+Defines runtime globals: servo modes, pause flags, observing mode, etc.
+	•	config.py
+Implements readBDRConfig and holds config schema.
+	•	commands.py
+Internal command message definitions (commander → RTC).
+
+This replaces scattered C++ globals with explicit state.
+
+⸻
+
+baldr_rtc/commander/ — Control Plane
+	•	server.py
+ZMQ REP loop; dispatches commands.
+	•	protocol.py
+Parses raw strings ("add 2,3", "readBDRConfig file").
+	•	commands.py
+Implements backwards-compatible command handlers:
+	•	status
+	•	readBDRConfig
+	•	pauseRTC, resumeRTC
+	•	open_all, close_all
+	•	stop_baldr
+
+Commander:
+	•	never blocks
+	•	never performs AO computation
+	•	never writes telemetry
+
+⸻
+
+baldr_rtc/rtc/loop.py — RTC Loop
+
+Equivalent to rtc.cpp.
+
+Responsibilities:
+	•	Run at camera cadence
+	•	Drain command queue
+	•	Maintain state machine:
+	•	open / close
+	•	pause / resume
+	•	stop
+	•	(Later) run AO pipeline:
+	•	read camera
+	•	reconstruct
+	•	apply controller
+	•	send DM commands
+	•	Push every iteration into telemetry ring buffer
+
+Design constraint:
+	•	No ZMQ
+	•	No file I/O
+	•	Minimal allocation
+
+⸻
+
+baldr_rtc/telemetry/
+
+Low-priority, loss-tolerant I/O.
+	•	ring.py
+Fast, lock-light rolling buffer written by RTC.
+	•	worker.py
+Periodically flushes chunks to disk.
+
+Telemetry:
+	•	should not skip samples unless buffer overruns
+	•	must never stall RTC
+
+⸻
+
+Thread Ownership Rules (Critical)
+
+Thread         May write                           May read
+=====================================================
+Commander       Command queue                       RuntimeGlobals (status only)
+RTC             RuntimeGlobals, telemetry ring      Command queue   
+Telemetry       Disk                                Telemetry ring
+
+
+No other cross-thread mutation is allowed.
+
+⸻
+
+Beam / Multi-Instance Model
+	•	Each beam = one process
+	•	Default socket mapping:
+	•	beam 1 → tcp://127.0.0.1:3001
+	•	beam 2 → tcp://127.0.0.1:3002
+	•	…
+	•	Telemetry directories are namespaced per beam
+	•	No shared SHM or hardware handles across beams
+
+⸻
+
+Backwards Compatibility Guarantees
+
+The following must remain unchanged unless a deliberate breaking change is made:
+	•	Commander command names
+	•	Commander semantics
+	•	status JSON structure
+	•	Meaning of open/close/pause/stop states
+
+Internal refactors must preserve these contracts.
+
+⸻
+
+Development Workflow (Recommended)
+	1.	Keep commander stable
+	2.	Implement RTC state machine fully
+	3.	Stub camera + DM I/O
+	4.	Replace stubs with real hardware access
+	5.	Expand telemetry content
+	6.	Optimize RTC performance if needed
+
+⸻
+
+Mental Model for Contributors
+	•	Commander is the API
+	•	RTC loop is sacred
+	•	Telemetry is expendable
+	•	One beam, one process
+	•	Never block the RTC
+
+If you follow those rules, you can safely evolve this system.

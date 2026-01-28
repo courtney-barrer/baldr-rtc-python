@@ -1,0 +1,525 @@
+
+
+System goals
+	•	Run as a long-lived process (daemon-like) that:
+	1.	runs a high-rate RTC loop,
+	2.	can be controlled live via commander (ZMQ),
+	3.	optionally records telemetry to disk without disturbing the loop.
+	•	Maintain backwards compatibility at the control interface level:
+	•	same commander command names + reply JSON shapes for the initial set
+	•	same “open/close/pause/stop/status” semantics
+
+
+Core components and responsibilities
+
+1) Baldr server (control plane + lifecycle)
+
+Responsibilities
+	•	Parse CLI args and locate config.
+	•	Build runtime config (readBDRConfig + derived parameters).
+	•	Initialize comms endpoints (camera server + MDS) based on sim/real mode.
+	•	Create and start the RTC loop worker and telemetry worker.
+	•	Start commander ZMQ REP server (blocking) as the primary “front door”.
+	•	Handle clean shutdown:
+	•	stop requested by stop_baldr or exit
+	•	stop threads and close resources deterministically
+
+Required behaviors
+	•	Startup order matters: config/derived params must be ready before RTC begins.
+	•	Should not deadlock if commander exits unexpectedly.
+	•	Must expose a consistent status snapshot at all times (which will be polled by WAG).
+
+
+2) RTC worker (fast loop)
+
+Responsibilities
+	•	Perform the real-time-ish closed loop at camera frame rate:
+	•	read camera frame (SHM or ZMQ image stream, depending on your Python plan)
+	•	compute signal(s) and modal errors (e_LO, e_HO)
+	•	apply controllers conditionally based on servo_mode_LO/HO:
+	•	if CLOSE: update DM command
+	•	if OPEN: reset / flatten / stop integrating
+	•	Apply “control requests” (open/close, gain updates, etc.) at safe boundaries.
+	•	Produce telemetry snapshots for the telemetry worker.
+
+Required behaviors
+	•	Pause/resume semantics must match C++:
+	•	pause stops processing without tearing down the loop
+	•	resume continues cleanly
+	•	Open/Close semantics:
+	•	switching to OPEN should prevent integrator windup (reset state)
+	•	switching to CLOSE should re-enable control with known initial state
+	•	Must respond to stop quickly.
+	•	Should minimize jitter and avoid blocking on I/O (disk/network).
+
+
+3) Telemetry requirement, refined
+	•	RTC runs at high rate (e.g. 500–2k Hz).
+	•	Telemetry should capture a continuous stream of selected variables (no gaps) up to some horizon.
+	•	Telemetry write-out can be slower / bursty.
+	•	RTC must never block on telemetry under normal operation.
+
+That implies you want a lock-light rolling buffer (ring buffer) written by the RTC thread and read/flushed by the telemetry thread.
+
+Recommended design: Ring buffer + chunked flush
+
+Data model
+
+Pick a small set of “high-rate” signals that you truly need at full rate:
+	•	timestamps / frame_id
+	•	TT/HO modal errors (maybe decimated or selected subset)
+	•	DM command summary (or full vector if you really need it)
+	•	scalar metrics (flux, strehl proxy, saturation count, etc.)
+	•	state bits (servo LO/HO open/close, paused)
+
+Everything else (large arrays, full images) should be decimated or captured on-demand.
+
+Ring buffer mechanics (single-writer, single-reader)
+	•	RTC thread is the only writer
+	•	telemetry thread is the only reader/flusher
+	•	Use a fixed-size preallocated numpy arrays:
+	•	buf_frame_id[N], buf_t[N], buf_metrics[N, ...], buf_eLO[N, nLO], etc.
+	•	Maintain:
+	•	write_idx (monotonic int, only RTC writes)
+	•	flush_idx (monotonic int, only telemetry writes)
+	•	RTC writes sample i = write_idx % N, then increments write_idx.
+
+“No skip” guarantee (within buffer capacity)
+
+You can guarantee no skips as long as the telemetry thread keeps up enough that it doesn’t fall behind by > N samples.
+
+If it does fall behind, you have two choices:
+	•	drop oldest (overwrite) and record an overrun counter (common)
+	•	or block RTC until flushed (not acceptable for you)
+
+So the honest guarantee is:
+
+no skipped samples unless the buffer overruns; overruns are detected and counted.
+
+This is the standard real-time telemetry tradeoff.
+
+Flushing strategy
+
+Telemetry thread periodically checks:
+	•	available = write_idx - flush_idx
+	•	If available >= chunk_size: copy out a contiguous chunk (handling wrap) and write.
+	•	chunk size should be tuned for disk efficiency (e.g. 1–5 seconds worth of data).
+
+This gives you:
+	•	constant-time work in RTC (just writes into arrays)
+	•	amortized I/O in telemetry
+
+Why this is better than a Queue
+
+A queue.Queue forces per-sample Python object overhead (allocations, locks) and can become a bottleneck at kHz rates. A ring buffer with preallocated numpy arrays is much lighter.
+
+A queue is fine for:
+	•	low-rate status events
+	•	on-demand snapshots
+	•	“commands” from commander → RTC
+
+…but not ideal for continuous high-rate telemetry.
+
+What I suggest we implement now in the skeleton
+
+In the initial Python skeleton (architecture-only), we implement:
+	•	TelemetryRingBuffer class:
+	•	prealloc arrays
+	•	push(sample) method called by RTC thread
+	•	pop_chunk(max_samples) called by telemetry thread
+	•	overrun_count
+	•	Telemetry thread:
+	•	flush every dt_flush seconds or whenever chunk is big enough
+	•	write placeholder “chunks” (e.g. .npz or .npy) for now
+	•	RTC thread:
+	•	push a minimal sample every loop iteration (frame_id, time, a few scalars)
+	•	later you expand to full vectors as needed
+
+This matches your stated goal: “rolling buffer, no skipping, minimal RTC impact.”
+
+⸻
+
+
+
+==============
+Communication between components
+
+Control plane → RTC loop
+
+Requirement: commander commands must not directly mutate RTC internals in unsafe ways.
+
+Mechanism
+	•	Commander thread puts a message onto a command_queue, e.g.
+	•	{"type": "SET_SERVO_LO", "value": SERVO_CLOSE}
+	•	{"type": "PAUSE", "value": True}
+	•	{"type": "LOAD_CONFIG", "path": "..."}
+	•	RTC loop drains and applies these at a safe boundary (typically once per frame).
+
+Why
+	•	Prevent races (e.g. config reload mid-matrix multiply)
+	•	Make open/close transitions deterministic
+
+⸻
+
+RTC loop → Telemetry worker
+
+Requirement: telemetry output should not lock RTC for long or require deep copying huge objects under contention.
+
+Mechanism
+	•	RTC loop publishes snapshots into a telemetry_queue (bounded).
+	•	Telemetry worker consumes and writes.
+
+Snapshot content should be a small, self-contained dict, ideally with:
+	•	timestamps, frame counters
+	•	last DM command(s)
+	•	LO/HO error vectors (maybe decimated)
+	•	performance metrics (strehl estimate, flux, etc.)
+	•	state flags (open/close/pause, config file, mode)
+
+⸻
+
+State model requirements
+
+The system state needs to support:
+	•	servo_mode (global stop)
+	•	servo_mode_LO, servo_mode_HO (OPEN/CLOSE)
+	•	pause_rtc flag
+	•	observing_mode, phasemask
+	•	current runtime rtc_config (including fps, matrices present flags)
+	•	derived parameters from camera server (fps/gain) must be in rtc_config.fps
+	•	status must always be queryable without blocking
+
+In Python terms: this suggests a single shared RTCState dataclass protected by:
+	•	atomic-ish fields (threading.Event for stop/pause)
+	•	or a Lock for small reads/writes
+	•	but preferably only the RTC thread mutates “hot” state, with commander sending requests.
+
+⸻
+
+ZMQ requirements
+	•	Commander interface must be:
+	•	ZMQ REP socket on a known endpoint
+	•	single-string request, JSON-ish args parsing
+	•	JSON string reply (except exit)
+	•	Any other ZMQ (camera server, MDS) must follow:
+	•	socket-per-thread rule (each ZMQ socket is used only in the thread where it is created)
+	•	timeouts so the RTC doesn’t hang forever if a server is down
+
+⸻
+
+Shutdown requirements
+	•	stop_baldr sets the stop condition (SERVO_STOP) and triggers all threads to exit.
+	•	exit in commander stops commander server and also triggers stop (or vice versa).
+	•	Telemetry worker finishes current write or exits cleanly.
+	•	RTC loop stops within a bounded time (e.g., next frame or timeout).
+
+⸻
+
+Non-functional requirements
+	•	Deterministic transitions for open/close/pause/resume (no half-applied updates).
+	•	No blocking I/O in RTC loop.
+	•	Traceability: log state transitions and command invocations.
+	•	Backwards compatible status payload.
+
+⸻
+
+If you agree with this requirement set, the next step is to choose the Python concurrency pattern:
+	•	Threads + queues (recommended initially)
+	•	Later upgrade telemetry to a process if needed.
+
+And then I can write a “skeleton-only” Python package layout:
+	•	baldr_server.py (lifecycle + commander + start threads)
+	•	rtc_loop.py (RTC worker skeleton, no real math yet)
+	•	telemetry_worker.py (queue consumer + placeholder writer)
+	•	state.py (dataclasses/enums + command message types)
+
+
+
+
+================================
+Generated text for initial implementation functions in RTC to do: 
+# Baldr RTC Python Commander – Minimum Compatibility Spec (v0)
+
+Goal: implement the initial commander interface in Python with backwards-compatible
+command names and JSON reply shapes (placeholders allowed internally).
+
+## Transport / protocol
+
+- Commander server: ZMQ REP socket.
+- Request message: a single string:
+    "<command_name>" OR "<command_name> <args>"
+- Args parsing:
+    - Accept both:
+        - "cmd 2, 3"          (comma-separated JSON expressions → args=[2,3])
+        - "cmd [2,3]"         (JSON array → args=[2,3])
+        - "cmd { ... }"       (JSON object → args=[{...}])
+- Reply:
+    - For normal commands: JSON string (json.dumps of any JSON value/object)
+    - For errors: JSON object {"error": "<message>"} (as JSON string)
+    - For "exit": reply literal string "Exiting!" (NOT JSON) and terminate server loop.
+
+## Global runtime state (placeholders acceptable)
+
+We maintain shared runtime state used by commands and by the RTC loop:
+
+- servo_mode: enum/int (main loop state), with at least:
+    - SERVO_STOP
+- servo_mode_LO: enum/int, with at least:
+    - SERVO_OPEN
+    - SERVO_CLOSE
+- servo_mode_HO: enum/int, with at least:
+    - SERVO_OPEN
+    - SERVO_CLOSE
+- pause_rtc: bool flag
+- observing_mode: string (e.g. "bright" / "faint")
+- phasemask: string (e.g. "H3")
+- g_active_config_filename: string path
+- rtc_config: object with fields:
+    - fps: float (runtime fps; set in initDerivedParameters / ZMQ query)
+    - matrices.I2M_LO: array-like (or placeholder list) with .size or len
+    - matrices.I2M_HO: array-like (or placeholder list) with .size or len
+    - state.controller_type: string (e.g. "PID", "Leaky", "Kalman")
+    - inj_signal.enabled: bool
+    - state.auto_close: bool
+    - limits.open_on_flux_limit: float
+    - limits.close_on_strehl_limit: float
+    - limits.open_on_strehl_limit: float
+
+Threading rule (Python safety): commander handlers do NOT directly mutate control-loop
+internals in unsafe ways; instead they enqueue a state-change request and RTC thread
+applies at a safe boundary. (For placeholders, direct assignment is acceptable.)
+
+## Commands to implement first (names + args + replies)
+
+### (A) Config load/build
+1) readBDRConfig
+- Name: "readBDRConfig"   (if we prefer Python naming, add alias later; keep this for compat)
+- Args: [<config_file_path:string>]
+  - Accept either:
+      "readBDRConfig \"path/to/config.toml\""
+      "readBDRConfig [\"path/to/config.toml\"]"
+- Behavior:
+  - Load / parse TOML and construct rtc_config (placeholder allowed).
+  - Set g_active_config_filename = provided path.
+  - Call/init derived params: rtc_config.initDerivedParameters() (placeholder allowed).
+- Reply JSON (object):
+  {
+    "ok": true,
+    "config_file": "<path>",
+    "configured": <0|1>,
+    "frequency": <rtc_config.fps>
+  }
+- Error reply:
+  {"error": "..."}.
+
+### (B) State commands
+2) pauseRTC
+- Name: "pauseRTC"
+- Args: []
+- Behavior:
+  - pause_rtc = true
+- Reply JSON:
+  {"ok": true, "paused": true}
+
+3) resumeRTC
+- Name: "resumeRTC"
+- Args: []
+- Behavior:
+  - pause_rtc = false
+  - wake any RTC wait condition (placeholder: no-op)
+- Reply JSON:
+  {"ok": true, "paused": false}
+
+4) stop_baldr
+- Name: "stop_baldr"
+- Args: []  (C++ signature had an unused "mode"_arg in registration; ignore in Python v0)
+- Behavior:
+  - servo_mode = SERVO_STOP
+- Reply JSON:
+  {"ok": true, "servo_mode": <SERVO_STOP>}
+
+### (C) Open/Close loop commands
+All these are “state flip” commands and should match C++ names.
+
+5) close_baldr_LO
+- Name: "close_baldr_LO"
+- Args: []
+- Behavior:
+  - servo_mode_LO = SERVO_CLOSE
+- Reply JSON:
+  {"ok": true, "TT_state": <SERVO_CLOSE>}
+
+6) open_baldr_LO
+- Name: "open_baldr_LO"
+- Args: []
+- Behavior:
+  - servo_mode_LO = SERVO_OPEN
+- Reply JSON:
+  {"ok": true, "TT_state": <SERVO_OPEN>}
+
+7) close_baldr_HO
+- Name: "close_baldr_HO"
+- Args: []
+- Behavior:
+  - servo_mode_HO = SERVO_CLOSE
+- Reply JSON:
+  {"ok": true, "HO_state": <SERVO_CLOSE>}
+
+8) open_baldr_HO
+- Name: "open_baldr_HO"
+- Args: []
+- Behavior:
+  - servo_mode_HO = SERVO_OPEN
+- Reply JSON:
+  {"ok": true, "HO_state": <SERVO_OPEN>}
+
+9) close_all
+- Name: "close_all"
+- Args: []
+- Behavior:
+  - servo_mode_LO = SERVO_CLOSE
+  - servo_mode_HO = SERVO_CLOSE
+- Reply JSON:
+  {"ok": true, "TT_state": <SERVO_CLOSE>, "HO_state": <SERVO_CLOSE>}
+
+10) open_all
+- Name: "open_all"
+- Args: []
+- Behavior:
+  - servo_mode_LO = SERVO_OPEN
+  - servo_mode_HO = SERVO_OPEN
+- Reply JSON:
+  {"ok": true, "TT_state": <SERVO_OPEN>, "HO_state": <SERVO_OPEN>}
+
+### (D) Status
+11) status
+- Name: "status"
+- Args: []
+- Behavior: return a snapshot equivalent to C++ Status struct:
+  {
+    "TT_state":        <servo_mode_LO>,
+    "HO_state":        <servo_mode_HO>,
+    "mode":            <observing_mode or "unknown">,
+    "phasemask":       <phasemask or "unknown">,
+    "frequency":       <rtc_config.fps>,
+    "configured":      <1 if len(I2M_LO)>0 or len(I2M_HO)>0 else 0>,
+    "ctrl_type":       <rtc_config.state.controller_type>,
+    "config_file":     <g_active_config_filename or "unknown">,
+    "inj_enabled":     <1 if rtc_config.inj_signal.enabled else 0>,
+    "auto_loop":       <1 if rtc_config.state.auto_close else 0>,
+    "close_on_strehl": <rtc_config.limits.close_on_strehl_limit>,
+    "open_on_strehl":  <rtc_config.limits.open_on_strehl_limit>,
+    "close_on_snr":    2.0,  # placeholder constant (match C++ placeholder)
+    "open_on_snr":     <rtc_config.limits.open_on_flux_limit>,
+    "TT_offsets":      0     # placeholder flag
+  }
+
+### (E) Optional passthroughs (second priority)
+12) send_mds_command
+- Name: "send_mds_command"
+- Args: [<cmd_string:string>]
+- Behavior: send raw string via ZMQ REQ to MDS (placeholder allowed).
+- Reply: {"ok": true, "reply": "<raw reply string>"}
+
+13) send_cam_command
+- Name: "send_cam_command"
+- Args: [<cmd_string:string>]
+- Behavior: send raw string via ZMQ REQ to camera server (placeholder allowed).
+- Reply: {"ok": true, "reply": "<raw reply string>"}
+
+## Notes / compatibility decisions
+
+- Command names should match C++ exactly for now:
+  pauseRTC, resumeRTC, stop_baldr, status,
+  open_baldr_LO, close_baldr_LO, open_baldr_HO, close_baldr_HO, open_all, close_all,
+  readBDRConfig, send_mds_command, send_cam_command.
+- Argument parsing must accept both "cmd 1,2" and "cmd [1,2]" forms.
+- status output keys must match C++ JSON keys exactly.
+- Placeholder internals are allowed initially; replies must be stable.
+
+
+
+CLI
+ │
+ ▼
+Commander (ZMQ REP)
+ │        status()
+ │        ─────────► RTCState (read-only)
+ │
+ │ commands
+ ▼
+Command Queue
+ │
+ ▼
+RTC Loop ───► Telemetry Ring Buffer ───► Telemetry Worker ───► Disk
+
+
+
+
+
+                         (per BEAM / per PROCESS)
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                               baldr_rtc_python                               │
+│                                                                              │
+│  CLI ENTRYPOINTS (thin)                                                      │
+│  ┌──────────────────────────────┐        ┌──────────────────────────────┐    │
+│  │ scripts/baldr_server.py       │        │ scripts/commander_client.py  │    │
+│  │ - parse --beam/--socket/...   │        │ - ZMQ REQ send one command   │    │
+│  │ - call baldr_rtc.server.main  │        │ - print JSON reply           │    │
+│  └───────────────┬──────────────┘        └───────────────┬──────────────┘    │
+│                  │                                       │                   │
+│                  ▼                                       │                   │
+│  ORCHESTRATION / LIFECYCLE                               │                   │
+│  ┌──────────────────────────────────────────────────────┐│                   │
+│  │ baldr_rtc/server.py                                  ││                   │
+│  │ - readBDRConfig()                                    ││                   │
+│  │ - create RuntimeGlobals (shared state)               ││                   │
+│  │ - create CommandQueue (commander -> RTC)             ││                   │
+│  │ - create TelemetryRing (RTC -> telemetry)            ││                   │
+│  │ - start threads: RTC + telemetry + commander         ││                   │
+│  └───────────────┬───────────────────────────┬──────────┘│                   │
+│                  │                           │           │                   │
+│                  │                           │           │ ZMQ               │
+│                  ▼                           ▼           │ REQ/REP           │
+│                                                                              │
+│   (Thread A) REAL-TIME-ish DATA PLANE          (Thread B) I/O PLANE           │
+│  ┌───────────────────────────────┐           ┌─────────────────────────────┐ │
+│  │ baldr_rtc/rtc/loop.py          │           │ baldr_rtc/telemetry/worker.py│ │
+│  │ RTCThread                      │           │ TelemetryThread             │ │
+│  │ - drain CommandQueue           │           │ - pop chunks from Ring       │ │
+│  │ - state machine:               │           │ - write to disk (.npz/.fits) │ │
+│  │   pause/open/close/stop        │           │ - slow, rate-limited         │ │
+│  │ - (later) read cam, compute,   │           └──────────────┬──────────────┘ │
+│  │   send DM                      │                          │                │
+│  │ - push EVERY sample to Ring    │                          │                │
+│  └──────────────┬────────────────┘                          │                │
+│                 │                                           │                │
+│                 ▼                                           ▼                │
+│        ┌───────────────────────────┐               ┌────────────────────────┐ │
+│        │ baldr_rtc/telemetry/ring.py│               │        Disk            │ │
+│        │ TelemetryRingBuffer        │               │ telem/beamN/*.npz      │ │
+│        │ - fast push (no blocking)  │               └────────────────────────┘ │
+│        │ - pop chunk for writer     │                                          │
+│        └───────────────────────────┘                                          │
+│                                                                              │
+│   (Thread C) CONTROL PLANE (Commander)                                        │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │ baldr_rtc/commander/server.py  (ZMQ REP)                                 │ │
+│  │  receive "status" / "open_all" / ...                                     │ │
+│  │        │                                                                │ │
+│  │        ▼                                                                │ │
+│  │ baldr_rtc/commander/protocol.py  (parse string -> name,args)            │ │
+│  │        │                                                                │ │
+│  │        ▼                                                                │ │
+│  │ baldr_rtc/commander/commands.py  (back-compat API)                      │ │
+│  │  - status(): read RuntimeGlobals snapshot -> JSON                       │ │
+│  │  - open/close/pause/resume/stop/readBDRConfig: push to CommandQueue     │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+│                                                                              │
+│  SHARED TYPES / STABLE SURFACES                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │ baldr_rtc/core/state.py   : RuntimeGlobals, enums, BDRConfig schema      │ │
+│  │ baldr_rtc/core/config.py  : readBDRConfig() (TOML/JSON load)             │ │
+│  │ baldr_rtc/core/commands.py: internal cmd dicts (commander -> RTC)        │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘

@@ -1,0 +1,46 @@
+This document is to think about what inputs are required for the Baldr RTC 
+
+
+
+=== initial draft input fields 
+
+# paths 
+config_file
+basis_file <- for injecting noise etc
+
+
+
+# pupil regions pixels 
+
+
+# pupil region mask
+
+
+# reference intensities 
+(requires meta data of camera state) 
+I0 
+N0 
+
+
+
+# metadata
+ctrl_LO
+ctrl_HO
+HO_reco_method
+LO_reco_method
+signal_space
+
+
+# Matricies
+I2A (optional) 
+I2M_LO
+I2M_HO
+M2C_LO
+M2C_HO
+
+# 
+
+
+# derived fields 
+
+

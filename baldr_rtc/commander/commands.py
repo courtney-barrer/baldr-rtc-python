@@ -79,6 +79,7 @@ def build_commander_module(
 
     ##################
     # STATUS
+    # !!IMPORTANT!! - this format is to match the expected format for wag (see legacy get_status in https://github.com/mikeireland/dcs/blob/main/baldr/baldr.cpp)
     def status(args):
         cfg = globals_.rtc_config
         lo_ready = len(cfg.matrices.I2M_LO) > 0
@@ -88,7 +89,7 @@ def build_commander_module(
         return {
             "TT_state": int(globals_.servo_mode_LO),
             "HO_state": int(globals_.servo_mode_HO),
-            "mode": globals_.observing_mode or "unknown",
+            "mode": globals_.mode or "unknown", 
             "phasemask": globals_.phasemask or "unknown",
             "frequency": float(cfg.fps),
             "configured": int(configured),

@@ -1,4 +1,6 @@
 Baldr RTC (Python) — Architecture & Design Summary
+28-Jan-2026
+Benjamin Courtney-Barrer & ChatGPT5.2 
 
 Purpose
 
@@ -18,13 +20,13 @@ Core Design Philosophy
 The system is split into three planes that must never bleed into each other:
 	1.	Control plane
 Commander interface (ZMQ), parsing commands, replying to clients
-→ must remain responsive and backward-compatible
+-> must remain responsive and backward-compatible
 	2.	Data plane
 RTC loop running at camera cadence
-→ must be minimal, deterministic, and free of blocking I/O
+-> must be minimal, deterministic, and free of blocking I/O
 	3.	I/O plane
 Telemetry buffering and disk writes
-→ must never affect RTC timing
+-> must never affect RTC timing
 
 This separation is enforced structurally by the directory layout and thread ownership rules.
 
@@ -95,7 +97,7 @@ scripts/
 
 User-facing entrypoints only.
 	•	baldr_server.py
-Parses CLI args, maps --beam → socket, calls server main.
+Parses CLI args, maps --beam -> socket, calls server main.
 	•	commander_client.py
 Sends one command string to a server and prints reply.
 
@@ -129,9 +131,33 @@ Defines runtime globals: servo modes, pause flags, observing mode, etc.
 	•	config.py
 Implements readBDRConfig and holds config schema.
 	•	commands.py
-Internal command message definitions (commander → RTC).
+Internal command message definitions (commander -> RTC).
 
 This replaces scattered C++ globals with explicit state.
+
+
+Configuration vs Runtime State
+
+The system distinguishes between:
+
+• BDRConfig — immutable configuration loaded at startup (or via commander reload)
+• RuntimeGlobals — mutable runtime state owned by the RTC thread
+
+BDRConfig mirrors the legacy C++ bdr_rtc_config structure as closely as possible and contains:
+• matrices
+• pixels / filters
+• reference pupils
+• controller parameters
+• camera configuration
+• I/O backend selection
+
+RuntimeGlobals contains only live state:
+• servo modes
+• pause / open / close flags
+• injected commands
+• references to CameraIO / DMIO
+
+RuntimeGlobals must not duplicate configuration fields except where strictly required for performance or convenience.
 
 ⸻
 
@@ -205,13 +231,43 @@ Telemetry       Disk                                Telemetry ring
 
 No other cross-thread mutation is allowed.
 
+4. Explicit Camera and DM I/O Abstraction
+
+The RTC loop interacts with the camera and deformable mirror exclusively through explicit I/O objects:
+	•	CameraIO
+	•	DMIO
+
+These objects encapsulate all details of how frames are acquired and how DM commands are written, whether via shared memory, ZMQ simulation backends, or future hardware interfaces.
+
+Key properties of this design:
+	•	The RTC loop is agnostic to the transport mechanism
+	•	Switching between:
+	•	real shared-memory hardware
+	•	ZMQ-based simulators
+	•	null / test backends
+requires no changes to RTC logic
+	•	All blocking, IPC, or platform-specific code is isolated outside the RTC loop
+
+At runtime:
+	•	CameraIO.get_frame() provides the latest camera frame
+	•	DMIO.write(cmd) applies a new DM command
+
+Both objects are created during system initialization and injected into the RTC runtime state. The RTC thread owns them exclusively and is the only component allowed to call their mutating methods.
+
+This abstraction enables:
+	•	macOS development with simulation backends
+	•	Linux deployment with xaosim / ImageStreamIO SHM
+	•	future backend replacement without architectural changes
+
+I/O selection is a configuration-time decision, not a runtime conditional inside the control loop.
+
 ⸻
 
 Beam / Multi-Instance Model
 	•	Each beam = one process
 	•	Default socket mapping:
-	•	beam 1 → tcp://127.0.0.1:3001
-	•	beam 2 → tcp://127.0.0.1:3002
+	•	beam 1 -> tcp://127.0.0.1:3001
+	•	beam 2 -> tcp://127.0.0.1:3002
 	•	…
 	•	Telemetry directories are namespaced per beam
 	•	No shared SHM or hardware handles across beams

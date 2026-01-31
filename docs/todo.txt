@@ -1,6 +1,13 @@
 
-28-01-2025
+
 [x] make it a github repository (https://github.com/courtney-barrer/baldr-rtc-python)
 [x] implement telemetry write state (on/off). Default off (core/state.py, server.py)
-[ ] implement shared memory and semaphores for camera subframe read and DM SHM write (based on beam #). Look at my dcs/simulation python examples of using the shared memory 
+[x] implement shared memory and semaphores for camera subframe read and DM SHM write (based on beam #). Look at my dcs/simulation python examples of using the shared memory 
+[x] implement with Null baseline and simulation mode (e.g. in config*.toml use mode = Null | simulation | shm baldr_rtc_python/baldr_rtc/io/backend_tests/test_simulation_backend.py)
+[x] implement configure function to config it with legacy 
 
+[ ] implement rtc loop math (without abstract controller class, just basic leaky default)
+[ ] telemetry 
+[ ] gui 
+[ ] implement abstract controller class (leaky and PID)
+[ ] test jitter

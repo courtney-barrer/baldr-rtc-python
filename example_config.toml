@@ -1,6 +1,25 @@
 [cam]
 fps = "1000"
 
+[io]
+# mode: null | shm | zmq | simulation
+mode = "simulation"
+beam = 1
+
+
+# shm paths use {beam} formatting
+cam_path = "/dev/shm/baldr{beam}.im.shm"
+dm_path = "/dev/shm/dm{beam}.im.shm"
+shm_nosem = true
+
+# expected image shape (rows, cols)
+null_shape = [48, 48]
+
+# ZMQ endpoints (only used when mode="zmq")
+zmq_cam_addr = "tcp://127.0.0.1:5556"
+zmq_dm_addr  = "tcp://127.0.0.1:5555"
+zmq_timeout_ms = 200
+
 [state]
 controller_type = "PID"
 auto_close = false

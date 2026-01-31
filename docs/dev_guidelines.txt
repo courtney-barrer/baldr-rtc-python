@@ -77,7 +77,7 @@ scripts/baldr_server.py
 
 Put here
 	•	CLI parsing (--beam, --socket, --config, paths)
-	•	default mapping: beam → socket
+	•	default mapping: beam -> socket
 	•	calling baldr_rtc.server.main(...)
 
 Don’t put here
@@ -181,7 +181,7 @@ Don’t put here
 	•	argument parsing from strings
 
 Why
-	•	Commander → RTC should not be “stringly typed”.
+	•	Commander -> RTC should not be “stringly typed”.
 	•	Keeps RTC loop simple and robust.
 
 ⸻
@@ -192,7 +192,7 @@ baldr_rtc/commander/server.py
 
 Put here
 	•	ZMQ REP server loop
-	•	receive string → parse → dispatch → reply JSON
+	•	receive string -> parse -> dispatch -> reply JSON
 	•	exit handling
 
 Don’t put here
@@ -253,6 +253,12 @@ Critical guideline
 5) RTC loop (time-critical-ish)
 
 baldr_rtc/rtc/loop.py
+
+The RTC loop must interact with hardware exclusively via CameraIO and DMIO class
+which keeps things agnostic to the backend (e.g. shm, simulation mode or otherwise) 
+The CameraIO class has a get_frame() method.
+the DMIO class has a write() method.
+These a passed to the RTC likely in a global variable.
 
 Put here
 	•	the loop cadence (based on fps)
@@ -326,6 +332,87 @@ Internal modules can change freely
 	•	You can refactor rtc/loop.py heavily
 	•	You can split rtc/loop.py into rtc/io.py, rtc/control.py, etc. later
 	•	But keep commander stable
+
+
+7) I/O backends (CameraIO / DMIO)
+
+baldr_rtc/io/
+    base.py
+    factory.py
+    shm_backend.py
+    sim_backend.py
+    null_backend.py
+    ... other backends we may want to implement
+
+Core idea
+
+The RTC loop must not know whether it is talking to:
+	•	real SHM hardware
+	•	a simulator
+	•	a null / test backend
+	•	a future ZMQ-only backend
+
+This is enforced via minimal Protocols.
+
+baldr_rtc/io/base.py
+
+Put here:
+	•	Stable, minimal interfaces required by the RTC loop
+	•	Shared datatypes passed across backends
+
+Current canonical interfaces:
+
+	@dataclass(frozen=True)
+	class Frame:
+		data: np.ndarray
+		t_s: float
+		frame_id: int
+
+
+	class CameraIO(Protocol):
+		def get_frame(self, *, timeout_s: Optional[float] = None) -> Frame: ...
+		def close(self) -> None: ...
+
+
+	class DMIO(Protocol):
+		def write(self, cmd: np.ndarray) -> None: ...
+		def close(self) -> None: ...
+
+
+Rules
+	•	These interfaces are RTC-facing API contracts
+	•	Backends may implement more methods, but RTC code must only rely on these
+	•	Changes here are breaking changes
+
+Why:
+	•	Enables hot-swapping SHM ↔ simulator without touching RTC logic
+	•	Makes the RTC loop testable without hardware
+
+
+
+baldr_rtc/io/factory.py
+
+Put here:
+	•	Backend selection logic
+	•	Mapping from config -> concrete CameraIO / DMIO objects
+
+Example responsibility:
+
+backend = "shm" | "sim" | "null"
+-> build ShmCameraIO + ShmDMIO
+-> or SimCameraIO + SimDMIO
+
+Don’t put here:
+	•	Any RTC logic
+	•	Any commander parsing
+	•	Any per-frame behavior
+
+Why:
+	•	Centralizes backend selection
+	•	Keeps server.py clean and declarative
+
+
+
 
 ⸻
 

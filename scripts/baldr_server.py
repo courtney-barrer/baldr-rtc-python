@@ -12,6 +12,7 @@ def _default_socket_for_beam(beam: int, host: str = "127.0.0.1", base_port: int 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Baldr RTC Python server (per-beam instance).")
     ap.add_argument("--beam", type=int, required=True, choices=[1, 2, 3, 4], help="Beam/telescope index (1-4).")
+    ap.add_argument("--phasemask", default="H3",choices=[f"H{ii}" for ii in [1,2,3,4,5]]+[f"J{ii}" for ii in [1,2,3,4,5]], help="ZWFS phasemask used. Index 1 is smallest, 5 is largest. H is H-band in Baldr, J is J-band in Baldr")
     ap.add_argument("--socket", default=None, help="Override commander REP endpoint, e.g. tcp://127.0.0.1:3001")
     ap.add_argument("--config", required=True, help="Path to config file (TOML).")
     ap.add_argument("--telem-dir", default=None, help="Telemetry output directory.")
@@ -25,6 +26,7 @@ def main() -> int:
 
     return server_main(
         beam=args.beam,
+        phasemask=args.phasemask,
         socket=socket,
         config_path=args.config,
         telem_dir=telem_dir,

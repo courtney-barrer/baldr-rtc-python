@@ -115,7 +115,7 @@ def make_io(cfg, beam: int) -> IOHandles:
         
 
     # default: null
-    shape = tuple(getattr(cfg, "io_null_shape", (48, 48)))
+    shape = tuple(getattr(cfg, "io_null_shape", (32, 32)))
     return IOHandles(camera=NullCameraIO(shape=shape), dm=NullDMIO())
 
 

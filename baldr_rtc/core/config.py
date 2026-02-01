@@ -33,7 +33,7 @@ def readBDRConfig(config_path: str, *, beam: int = 1, phasemask: str = "H1") -> 
     data = _load_toml(config_path)
 
     beam_key = f"beam{int(beam)}"
-    # Legacy format if beam table exists
+    #Legacy format if beam table exists
     if beam_key in data and isinstance(data[beam_key], dict):
         return readBDRConfig_legacy(config_path, beam=beam, phasemask=phasemask)
 
@@ -56,6 +56,10 @@ def readBDRConfig_simple(config_path: str, *, beam: int, phasemask: str) -> BDRC
     cfg.io_dm_path = str(_get(data, "io", "dm_path", default=cfg.io_dm_path))
     cfg.io_shm_nosem = bool(_get(data, "io", "shm_nosem", default=cfg.io_shm_nosem))
     cfg.io_shm_semid = int(_get(data, "io", "shm_semid", default=cfg.io_shm_semid))
+
+    cfg.io_null_shape = tuple(
+        _get(data, "io", "null_shape", default=list(cfg.io_null_shape))
+    )
 
     #cfg.init_derived_parameters()
     return cfg

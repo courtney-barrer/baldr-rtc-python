@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, List, Optional, Sequence, Tuple, Callable, Protocol
 import numpy as np
 from baldr_rtc.io.base import CameraIO, DMIO
 
+
+_EPS = 1e-12 # a global small number to avoid 1/0 errors
 
 class ServoState(IntEnum):
     SERVO_OPEN = 0
@@ -35,6 +37,7 @@ def _matmul(A: Any, x: Any) -> np.ndarray:
 # ----------------------------
 @dataclass
 class Limits:
+    # legacy fields from C++ RTC
     open_on_flux_limit: float = 0.0
     close_on_strehl_limit: float = 0.0
     open_on_strehl_limit: float = 0.0
@@ -49,6 +52,7 @@ class InjSignal:
 
 @dataclass
 class StateConfig:
+    #  legacy fields from C++ RTC
     # C++ ctrl_model state-ish fields
     DM_flat: str = ""
     signal_space: str = ""          # "pix" | "dm" (legacy expects string)
@@ -70,6 +74,7 @@ class StateConfig:
 
 @dataclass
 class Matrices:
+    # again legacy fields from C++ RTC
     # Matrices can be nested lists from TOML; leave them as Any
     I2A: Any = field(default_factory=list)
     I2M: Any = field(default_factory=list)
@@ -89,6 +94,7 @@ class Matrices:
 
 @dataclass
 class ReferencePupils:
+    # legacy fields from C++ RTC
     # flattened vectors (lists from TOML are fine)
     I0: Any = field(default_factory=list)
     N0: Any = field(default_factory=list)
@@ -114,6 +120,7 @@ class ReferencePupils:
 
 @dataclass
 class Pixels:
+    # legacy fields from C++ RTC
     # crop_pixels is [r1, r2, c1, c2]
     crop_pixels: Any = field(default_factory=list)
 
@@ -136,6 +143,7 @@ class Pixels:
 
 @dataclass
 class Filters:
+    # again legacy fields from C++ RTC
     # These are often 0/1 masks (but keep flexible)
     bad_pixel_mask: Any = field(default_factory=list)
     pupil: Any = field(default_factory=list)
@@ -217,7 +225,7 @@ class BDRConfig:
     io_zmq_timeout_ms: int = 200
 
     # Null backend
-    io_null_shape: Tuple[int, int] = (48, 48)
+    io_null_shape: Tuple[int, int] = (32, 32)
 
     def validate(self) -> None:
         print('not implemented')
@@ -225,6 +233,36 @@ class BDRConfig:
         # You can add more checks later (matrix shape checks, etc.)
 
 
+
+
+
+class Controller(Protocol):
+    def process(self, e: np.ndarray) -> np.ndarray: ...
+
+
+@dataclass(slots=True)
+class RTCModel:
+    # config-ish
+    signal_space: str  # "pix" | "dm"
+
+    # matrices (already numpy arrays, float64/float32; whatever you choose)
+    I2A: Optional[np.ndarray]      # (n_dm_sig, n_pix_sig) or None if pix space
+    I2M_LO: np.ndarray             # (n_lo, n_sig)
+    I2M_HO: np.ndarray             # (n_ho, n_sig)
+    M2C_LO: np.ndarray             # (n_act, n_lo)
+    M2C_HO: np.ndarray             # (n_act, n_ho)
+
+    # runtime references (already in *signal space*)
+    N0_runtime: np.ndarray         # (n_sig,)
+    i_setpoint_runtime: np.ndarray # (n_sig,)  # e.g. I_ref = I0/N0
+
+    # controllers (must expose .process(vec)->vec)
+    ctrl_LO: Controller
+    ctrl_HO: Controller
+    # optional hooks (keep None for “fast path”)
+    process_frame: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    perf_model: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    perf_param: Optional[object] = None
 
 
 @dataclass
@@ -243,9 +281,11 @@ class RuntimeGlobals:
     camera_io: Optional[CameraIO] = None
     dm_io: Optional[DMIO] = None
 
-    # this holds the current RTC state. 
+    # this holds the RTC config state. 
     rtc_config: BDRConfig = field(default_factory=BDRConfig)
 
+    # this will hold the runtime RTC matricies and variables
+    model: Optional[RTCModel] = None # we dont want a default creation yet
 
     
     

@@ -232,7 +232,37 @@ class BaldrAppSimState:
 
 @dataclass
 class SimCameraIO(CameraIO):
-    state: BaldrAppSimState
+    def __init__(self, state: BaldrAppSimState, shape=(32, 32)):
+        self.state = state
+        self.shape = tuple(shape)
+
+
+    @staticmethod
+    def _crop_or_pad_center(im: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+        # im: (H,W)
+        Ht, Wt = shape
+        H, W = im.shape
+
+        # center-crop if too big
+        if H > Ht:
+            r0 = (H - Ht) // 2
+            im = im[r0:r0 + Ht, :]
+            H = Ht
+        if W > Wt:
+            c0 = (W - Wt) // 2
+            im = im[:, c0:c0 + Wt]
+            W = Wt
+
+        # pad if too small
+        if H < Ht or W < Wt:
+            out = np.zeros((Ht, Wt), dtype=im.dtype)
+            r0 = (Ht - H) // 2
+            c0 = (Wt - W) // 2
+            out[r0:r0 + H, c0:c0 + W] = im
+            return out
+
+        return im
+
 
     def get_frame(self, *, timeout_s: Optional[float] = None) -> Frame:
         _ = timeout_s  # unused
@@ -246,6 +276,11 @@ class SimCameraIO(CameraIO):
             detector=self.state.detector,
             use_pyZelda=self.state.cfg.use_pyZelda,
         ).astype(float)
+
+        if im.ndim != 2:
+            raise RuntimeError(f"SimCameraIO: expected 2D frame, got {im.shape}")
+
+        im = self._crop_or_pad_center(im, self.shape)
 
         self.state.frame_id += 1
         return Frame(data=im, t_s=time.time(), frame_id=int(self.state.frame_id))
